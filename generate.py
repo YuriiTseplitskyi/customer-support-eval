@@ -19,6 +19,17 @@ from generator_config import (
 )
 
 
+# Calibration to preserve target aggregate distributions while enforcing:
+# - not_resolved -> mistakes_present must be true
+# - low complexity -> max 1 main mistake
+TARGET_MISTAKES_PRESENT = 0.20
+TARGET_OUTCOME_NOT_RESOLVED = DISTR["outcome"]["not_resolved"]
+MISTAKES_PRESENT_IF_NOT_NOT_RESOLVED = (TARGET_MISTAKES_PRESENT - TARGET_OUTCOME_NOT_RESOLVED) / (
+    1.0 - TARGET_OUTCOME_NOT_RESOLVED
+)
+NUM_MISTAKES_IF_NON_LOW = {"1": 0.20, "2": 0.60, "3": 0.20}
+
+
 def make_rng(seed: int) -> random.Random:
     return random.Random(seed)
 
@@ -66,6 +77,17 @@ def flatten_mistakes() -> List[Tuple[str, str]]:
 
 
 ALL_SUB_MISTAKES = flatten_mistakes()
+SUB_TO_CATEGORY = {sub: category for category, sub in ALL_SUB_MISTAKES}
+
+
+def build_main_to_subs() -> Dict[str, List[str]]:
+    out: Dict[str, List[str]] = {}
+    for _category, sub in ALL_SUB_MISTAKES:
+        out.setdefault(SUB_TO_MAIN[sub], []).append(sub)
+    return out
+
+
+MAIN_TO_SUBS = build_main_to_subs()
 
 
 def scenario_bias_multiplier(scenario: str, main_mistake: str) -> float:
@@ -88,6 +110,42 @@ def sample_sub_mistakes(rng: random.Random, k: int, scenario: str) -> List[str]:
         selected.append(sub)
         used.add(sub)
     return selected
+
+
+def sample_distinct_main_mistakes(rng: random.Random, k: int, scenario: str) -> List[str]:
+    selected: List[str] = []
+    available = list(MAIN_TO_SUBS.keys())
+    for _ in range(min(k, len(available))):
+        pairs: List[Tuple[str, float]] = []
+        for main in available:
+            # Approximate base weight from all sub-mistake/category weights that map to this main.
+            base = 0.0
+            for sub in MAIN_TO_SUBS[main]:
+                base += MISTAKE_CATEGORY_WEIGHTS[SUB_TO_CATEGORY[sub]]
+            pairs.append((main, base * scenario_bias_multiplier(scenario, main)))
+        main_pick = weighted_choice_from_pairs(rng, pairs)
+        selected.append(main_pick)
+        available.remove(main_pick)
+    return selected
+
+
+def sample_subs_for_selected_mains(rng: random.Random, selected_mains: List[str], scenario: str) -> List[str]:
+    subs: List[str] = []
+    used = set()
+    for main in selected_mains:
+        candidates = [s for s in MAIN_TO_SUBS[main] if s not in used]
+        pairs: List[Tuple[str, float]] = []
+        for sub in candidates:
+            weight = MISTAKE_CATEGORY_WEIGHTS[SUB_TO_CATEGORY[sub]] * scenario_bias_multiplier(
+                scenario, main
+            )
+            pairs.append((sub, weight))
+        if not pairs:
+            continue
+        pick = weighted_choice_from_pairs(rng, pairs)
+        subs.append(pick)
+        used.add(pick)
+    return subs
 
 
 def unique_extend_main_mistakes(
@@ -135,16 +193,20 @@ def unique_extend_main_mistakes(
 
 
 def sample_mistakes_bundle(rng: random.Random, spec: Dict[str, Any]) -> Tuple[bool, List[str], List[str], int]:
-    mistakes_present = weighted_choice(rng, DISTR["mistakes_present"]) == "true"
     if spec.get("outcome") == "not_resolved":
         mistakes_present = True
+    else:
+        mistakes_present = bernoulli(rng, MISTAKES_PRESENT_IF_NOT_NOT_RESOLVED)
     if not mistakes_present:
         return False, [], [], 0
-    k = min(3, int(weighted_choice(rng, DISTR["num_mistakes_if_present"])))
     if spec.get("complexity") == "low":
         k = 1
-    picked = sample_sub_mistakes(rng, k, spec["scenario"])
-    sub, main = unique_extend_main_mistakes(rng, picked, k, spec["scenario"])
+    else:
+        k = min(3, int(weighted_choice(rng, NUM_MISTAKES_IF_NON_LOW)))
+    selected_mains = sample_distinct_main_mistakes(rng, k, spec["scenario"])
+    selected_subs = sample_subs_for_selected_mains(rng, selected_mains, spec["scenario"])
+    # Fallback if any main failed to receive a sub due to edge-case collisions.
+    sub, main = unique_extend_main_mistakes(rng, selected_subs, k, spec["scenario"])
     return True, sub, main, len(main)
 
 
