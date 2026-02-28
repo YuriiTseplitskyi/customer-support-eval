@@ -2,6 +2,7 @@ import argparse
 import asyncio
 import json
 import os
+import random
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
@@ -36,6 +37,14 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=None,
         help="Maximum number of chats to analyze per dataset.",
+    )
+    parser.add_argument(
+        "--random-sample",
+        type=int,
+        nargs="?",
+        const=10,
+        default=None,
+        help="Analyze a random sample of chats per dataset. If passed without value, uses 10.",
     )
     parser.add_argument(
         "--output",
@@ -141,19 +150,33 @@ async def analyze_dataset(
     dataset_path: Path,
     chat_index: int | None,
     limit: int | None,
+    random_sample: int | None,
 ) -> Tuple[List[Dict[str, Any]], List[str]]:
     dataset = load_dataset(dataset_path)
     records: List[Dict[str, Any]] = []
     errors: List[str] = []
-    mode = "single_cli" if chat_index is not None else "dataset_cli"
+    if chat_index is not None:
+        mode = "single_cli"
+    elif random_sample is not None:
+        mode = "random_sample_cli"
+    else:
+        mode = "dataset_cli"
 
     if chat_index is not None and (chat_index < 0 or chat_index >= len(dataset)):
         errors.append(f"{dataset_path.name}: chat-index {chat_index} is out of range [0, {len(dataset)-1}]")
         return records, errors
 
+    sampled_indexes: set[int] | None = None
+    if random_sample is not None:
+        population = len(dataset)
+        k = min(random_sample, population)
+        sampled_indexes = set(random.sample(range(population), k))
+
     analyzed_count = 0
     for idx, record in enumerate(dataset):
         if chat_index is not None and idx != chat_index:
+            continue
+        if sampled_indexes is not None and idx not in sampled_indexes:
             continue
         if limit is not None and analyzed_count >= limit:
             break
@@ -187,6 +210,12 @@ async def main() -> None:
         raise ValueError("--chat-index requires --dataset.")
     if args.chat_index is not None and args.all_datasets:
         raise ValueError("--chat-index cannot be used with --all-datasets.")
+    if args.chat_index is not None and args.random_sample is not None:
+        raise ValueError("--chat-index cannot be used with --random-sample.")
+    if args.limit is not None and args.random_sample is not None:
+        raise ValueError("--limit cannot be used with --random-sample.")
+    if args.random_sample is not None and args.random_sample <= 0:
+        raise ValueError("--random-sample must be > 0.")
 
     data_dir = Path("datasets")
     dataset_paths: List[Path]
@@ -219,6 +248,7 @@ async def main() -> None:
             dataset_path=path,
             chat_index=args.chat_index,
             limit=args.limit,
+            random_sample=args.random_sample,
         )
         all_records.extend(records)
         all_errors.extend(errors)
