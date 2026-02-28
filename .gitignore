@@ -1,4 +1,9 @@
 *.json
 *.jsonl
-*.md
 __pycache__/
+.env
+*.pdf
+DOCUMENTATION.md
+FUNCTIONALITY.md
+datasets/
+results/

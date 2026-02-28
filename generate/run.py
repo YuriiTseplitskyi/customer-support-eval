@@ -1,33 +1,83 @@
 import argparse
 import json
+import os
 import random
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Sequence, Tuple
+from typing import Any, Dict, List, Literal, Sequence, Tuple
 
-from generator_config import (
-    DISTR,
-    DIALOGUE_LENGTH_BOUNDS,
-    GENERATOR_VERSION,
-    MAJOR_MISTAKES,
-    MISTAKE_CATEGORY_WEIGHTS,
-    MISTAKE_POOLS,
-    MISTAKE_TEXT,
-    SCENARIO_MAIN_BIAS,
-    SUB_SCENARIOS,
-    SUB_TO_MAIN,
-    TOPIC_HINTS,
-)
+from pydantic import BaseModel, Field, ValidationInfo, field_validator
+
+try:
+    from generate.config import (
+        DISTR,
+        DIALOGUE_LENGTH_BOUNDS,
+        GENERATOR_VERSION,
+        MAJOR_MISTAKES,
+        MISTAKE_CATEGORY_WEIGHTS,
+        MISTAKE_POOLS,
+        SCENARIO_MAIN_BIAS,
+        SUB_SCENARIOS,
+        SUB_TO_MAIN,
+    )
+except ModuleNotFoundError:
+    from config import (  # type: ignore
+        DISTR,
+        DIALOGUE_LENGTH_BOUNDS,
+        GENERATOR_VERSION,
+        MAJOR_MISTAKES,
+        MISTAKE_CATEGORY_WEIGHTS,
+        MISTAKE_POOLS,
+        SCENARIO_MAIN_BIAS,
+        SUB_SCENARIOS,
+        SUB_TO_MAIN,
+    )
+
+try:
+    from shared.chatgpt import ChatGPTWrapper, load_dotenv_file
+    from shared.prompts import GENERATION_SYSTEM_PROMPT
+except ModuleNotFoundError:
+    import sys
+    from pathlib import Path
+
+    sys.path.append(str(Path(__file__).resolve().parents[1]))
+    from shared.chatgpt import ChatGPTWrapper, load_dotenv_file  # type: ignore
+    from shared.prompts import GENERATION_SYSTEM_PROMPT  # type: ignore
 
 
-# Calibration to preserve target aggregate distributions while enforcing:
-# - not_resolved -> mistakes_present must be true
-# - low complexity -> max 1 main mistake
+
 TARGET_MISTAKES_PRESENT = 0.20
 TARGET_OUTCOME_NOT_RESOLVED = DISTR["outcome"]["not_resolved"]
 MISTAKES_PRESENT_IF_NOT_NOT_RESOLVED = (TARGET_MISTAKES_PRESENT - TARGET_OUTCOME_NOT_RESOLVED) / (
     1.0 - TARGET_OUTCOME_NOT_RESOLVED
 )
 NUM_MISTAKES_IF_NON_LOW = {"1": 0.20, "2": 0.60, "3": 0.20}
+load_dotenv_file(".env")
+DEFAULT_OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+
+
+class DialogueMessageModel(BaseModel):
+    role: Literal["client", "agent"]
+    text: str = Field(min_length=1, max_length=1200)
+
+
+class DialogueJSONModel(BaseModel):
+    messages: List[DialogueMessageModel]
+
+    @field_validator("messages")
+    @classmethod
+    def validate_messages_shape(cls, v: List[DialogueMessageModel], info: ValidationInfo) -> List[DialogueMessageModel]:
+        bounds = (info.context or {}).get("length_bounds", (1, 100))
+        lo, hi = int(bounds[0]), int(bounds[1])
+        if not (lo <= len(v) <= hi):
+            raise ValueError(f"messages length must be in [{lo}, {hi}]")
+        if not v:
+            raise ValueError("messages must not be empty")
+        if v[0].role != "client":
+            raise ValueError("first message must be client")
+        for i in range(1, len(v)):
+            if v[i - 1].role == v[i].role:
+                raise ValueError("messages must strictly alternate roles")
+        return v
 
 
 def make_rng(seed: int) -> random.Random:
@@ -315,6 +365,7 @@ def sample_generation_spec(rng: random.Random, dialogue_id: str) -> Dict[str, An
         "agent_mistakes_sub": [],
         "agent_mistakes_main": [],
         "length_bounds": list(DIALOGUE_LENGTH_BOUNDS[complexity]),
+        "length_target": dialogue_message_count(rng, complexity, False),
     }
     present, subs, mains, num = sample_mistakes_bundle(rng, spec)
     spec["mistakes_present"] = present
@@ -322,6 +373,7 @@ def sample_generation_spec(rng: random.Random, dialogue_id: str) -> Dict[str, An
     spec["agent_mistakes_main"] = mains
     spec["num_mistakes"] = num
     spec["hidden_dissatisfaction"] = bernoulli(rng, 0.15) if outcome == "resolved" else False
+    spec["length_target"] = dialogue_message_count(rng, complexity, spec["hidden_dissatisfaction"])
     spec = apply_constraints_and_fix(rng, spec)
     satisfaction = derive_satisfaction(spec["outcome"], spec["hidden_dissatisfaction"], spec["agent_mistakes_main"])
     quality_score = derive_quality_score(
@@ -362,101 +414,65 @@ def dialogue_message_count(rng: random.Random, complexity: str, hidden: bool) ->
     return choice(rng, counts)
 
 
-def client_style_snippets(conflict_level: str) -> Tuple[str, str]:
-    if conflict_level == "low":
-        return "Thanks for checking.", "Okay, thank you."
-    if conflict_level == "medium":
-        return "This is frustrating because I still need a clear answer.", "Alright, I understand."
-    return "This is not acceptable. I need a real answer now.", "Fine. I expect this to be handled."
+def build_user_prompt(spec: Dict[str, Any]) -> str:
+    return (
+        "Generate one dialogue JSON for this spec.\n"
+        f"- scenario: {spec['scenario']}\n"
+        f"- sub_scenario: {spec['sub_scenario']}\n"
+        f"- complexity: {spec['complexity']}\n"
+        f"- outcome: {spec['outcome']}\n"
+        f"- conflict_level: {spec['conflict_level']}\n"
+        f"- agent_tone: {spec['agent_tone']}\n"
+        f"- hidden_dissatisfaction: {str(spec['hidden_dissatisfaction']).lower()}\n"
+        f"- mistakes_present: {str(spec['mistakes_present']).lower()}\n"
+        f"- agent_mistakes_sub: {spec['agent_mistakes_sub']}\n"
+        f"- agent_mistakes_main: {spec['agent_mistakes_main']}\n"
+        f"- target_message_count: {spec['length_target']}\n"
+        "Behavior constraints (mandatory):\n"
+        f"- EXACT message count required: {spec['length_target']}.\n"
+        f"- Let N={spec['length_target']}. Internally plan turn indices 1..N, then output exactly N messages.\n"
+        "- Respect outcome and conflict level in actual conversation flow.\n"
+        "- Keep strict role alternation starting with client.\n"
+        "- If hidden_dissatisfaction=true, make final client line neutral-positive.\n"
+        "- If mistakes_present=true, reflect listed mistakes naturally in agent replies.\n"
+        "- If mistakes_present=false, avoid mistake-like behavior.\n"
+        "- Keep text concise and realistic for support chat.\n"
+        "Output now as JSON only.\n"
+    )
 
 
-def inject_mistake_line(sub_mistakes: List[str], index: int) -> str:
-    if not sub_mistakes:
-        return ""
-    return MISTAKE_TEXT.get(sub_mistakes[index % len(sub_mistakes)], "")
-
-
-def build_agent_core_reply(spec: Dict[str, Any], phase: str) -> str:
-    hints = TOPIC_HINTS[spec["scenario"]]
-    if phase == "ack":
-        return (
-            "Thanks for reaching out. I understand the issue and I will review it now."
-            if spec["agent_tone"] == "polite"
-            else "I understand the issue. I am checking it now."
-        )
-    if phase == "progress":
-        prefix = "Certainly." if spec["agent_tone"] == "polite" else "I checked."
-        return f"{prefix} I reviewed the case details related to {spec['sub_scenario']}."
-    if phase == "final":
-        return hints[spec["outcome"]]
-    return "I am reviewing your request."
+def generate_dummy_messages(spec: Dict[str, Any]) -> List[Dict[str, str]]:
+    total_messages = spec["length_target"]
+    messages: List[Dict[str, str]] = []
+    for i in range(total_messages):
+        role = "client" if i % 2 == 0 else "agent"
+        messages.append({"role": role, "text": "dummy"})
+    return messages
 
 
 def generate_messages_from_spec(
-    _rng: random.Random, spec: Dict[str, Any], attempt: int = 0, dummy_text: bool = False
+    llm: ChatGPTWrapper | None,
+    spec: Dict[str, Any],
+    attempt: int = 0,
+    dummy_text: bool = False,
+    temperature: float = 0.0,
 ) -> List[Dict[str, str]]:
-    local_rng = random.Random(f"{spec['dialogue_id']}|{attempt}|{spec['complexity']}|{spec['outcome']}")
-    total_messages = dialogue_message_count(local_rng, spec["complexity"], spec["hidden_dissatisfaction"])
-    client_mid, _client_last = client_style_snippets(spec["conflict_level"])
-    hints = TOPIC_HINTS[spec["scenario"]]
-
-    messages: List[Dict[str, str]] = [
-        {
-            "role": "client",
-            "text": f"{hints['client_open'].format(sub_scenario=spec['sub_scenario'])} {hints['details']}",
-        }
-    ]
-
-    agent_turn_idx = 0
-    client_turn_idx = 1
-
-    while len(messages) < total_messages:
-        role = "agent" if len(messages) % 2 == 1 else "client"
-        remaining = total_messages - len(messages)
-        if role == "agent":
-            agent_turn_idx += 1
-            if agent_turn_idx == 1:
-                phase = "ack"
-            elif remaining <= 2:
-                phase = "final"
-            else:
-                phase = "progress"
-            text = build_agent_core_reply(spec, phase)
-            mistake_line = inject_mistake_line(spec["agent_mistakes_sub"], agent_turn_idx - 1)
-            if mistake_line:
-                text = f"{text} {mistake_line}"
-            if phase == "final":
-                if spec["outcome"] == "resolved":
-                    text += " Please confirm if this resolves your issue."
-                elif spec["outcome"] == "escalated":
-                    text += " You will receive an update after review."
-                else:
-                    text += " I can provide more help after additional review."
-            messages.append({"role": "agent", "text": text})
-        else:
-            client_turn_idx += 1
-            is_last = remaining == 1
-            if is_last and spec["hidden_dissatisfaction"]:
-                text = "Okay, thank you."
-            elif is_last and spec["outcome"] == "resolved":
-                text = "Yes, that answers it. Thanks."
-            elif is_last and spec["outcome"] == "escalated":
-                text = "Understood, I will wait for the update."
-            elif is_last:
-                text = "This is still not resolved, but I understand your response."
-            elif spec["conflict_level"] == "high" and client_turn_idx == 2:
-                text = "I already explained this. Why is nobody fixing it? I may need a manager."
-            elif spec["conflict_level"] == "medium" and client_turn_idx == 2:
-                text = "I still need a direct answer, not a generic reply."
-            else:
-                text = client_mid
-            messages.append({"role": "client", "text": text})
-
-    if spec["hidden_dissatisfaction"] and messages[-1]["role"] == "client":
-        messages[-1]["text"] = "Okay, thank you."
     if dummy_text:
-        messages = [{"role": m["role"], "text": "dummy"} for m in messages]
-    return messages
+        return generate_dummy_messages(spec)
+    if llm is None:
+        raise RuntimeError("ChatGPT client is required when --dummy_text is not set.")
+
+    system_prompt = GENERATION_SYSTEM_PROMPT
+    user_prompt = build_user_prompt(spec)
+    model = llm.ask_structured(
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        response_model=DialogueJSONModel,
+        temperature=temperature,
+        # Allow outputs longer than target; retry logic/validator handles acceptance rules.
+        validation_context={"length_bounds": (spec["length_target"], 200)},
+    )
+    return [{"role": m.role, "text": m.text} for m in model.messages]
 
 
 def validate_messages(messages: Any, complexity: str) -> Tuple[bool, List[str]]:
@@ -510,6 +526,7 @@ def assemble_record(spec: Dict[str, Any], messages: List[Dict[str, str]]) -> Dic
             "hidden_dissatisfaction": spec["hidden_dissatisfaction"],
             "agent_tone": spec["agent_tone"],
             "length_bounds": list(spec["length_bounds"]),
+            "length_target": spec["length_target"],
         },
         "ground_truth": {
             **spec["ground_truth"],
@@ -525,6 +542,8 @@ def build_manifest(
     out_path: str,
     manifest_path: str,
     observed_stats: Dict[str, Any],
+    generation_mode: str,
+    model_name: str,
 ) -> Dict[str, Any]:
     return {
         "seed": seed,
@@ -541,6 +560,10 @@ def build_manifest(
             "retry_policy": "retry_on_validator_fail_with_fixed_spec",
             "validator": "role_format_turntaking_length",
             "deterministic_sampling": True,
+            "generation_mode": generation_mode,
+            "llm_model": model_name,
+            "structured_output": True,
+            "schema_validation": "pydantic",
         },
     }
 
@@ -549,10 +572,18 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Deterministic synthetic support dialogue generator")
     parser.add_argument("--n", type=int, default=500)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--out", default="dataset.jsonl")
-    parser.add_argument("--manifest", default="manifest.json")
+    parser.add_argument("--out", default="generate/jsons/dataset.jsonl")
+    parser.add_argument("--manifest", default="generate/jsons/manifest.json")
     parser.add_argument("--max_retries", type=int, default=3)
     parser.add_argument("--dummy_text", action="store_true", help="Write 'dummy' as every message text")
+    parser.add_argument("--model", default=DEFAULT_OPENAI_MODEL, help="OpenAI model name")
+    parser.add_argument("--api_key", default=None, help="OpenAI API key (fallback: OPENAI_API_KEY env)")
+    parser.add_argument("--temperature", type=float, default=0.0, help="LLM temperature")
+    parser.add_argument(
+        "--allow_partial",
+        action="store_true",
+        help="Do not raise if generated records are fewer than requested",
+    )
     return parser.parse_args()
 
 
@@ -590,18 +621,58 @@ def update_observed_stats(stats: Dict[str, Any], spec: Dict[str, Any]) -> None:
 def main() -> None:
     args = parse_args()
     rng = make_rng(args.seed)
+    llm = None if args.dummy_text else ChatGPTWrapper(model_name=args.model, api_key=args.api_key)
     n_generated = 0
     failed: List[Dict[str, Any]] = []
     observed_stats = init_observed_stats()
+    os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
+    os.makedirs(os.path.dirname(args.manifest) or ".", exist_ok=True)
 
     with open(args.out, "w", encoding="utf-8") as out_f:
         for i in range(args.n):
             dialogue_id = f"dlg_{i:06d}"
             spec = sample_generation_spec(rng, dialogue_id)
+            print(
+                f"[SPEC] {dialogue_id} "
+                + json.dumps(
+                    {
+                        "scenario": spec["scenario"],
+                        "sub_scenario": spec["sub_scenario"],
+                        "complexity": spec["complexity"],
+                        "outcome": spec["outcome"],
+                        "conflict_level": spec["conflict_level"],
+                        "mistakes_present": spec["mistakes_present"],
+                        "num_mistakes": spec["num_mistakes"],
+                        "agent_mistakes_sub": spec["agent_mistakes_sub"],
+                        "agent_mistakes_main": spec["agent_mistakes_main"],
+                        "hidden_dissatisfaction": spec["hidden_dissatisfaction"],
+                        "agent_tone": spec["agent_tone"],
+                        "length_bounds": spec["length_bounds"],
+                        "length_target": spec["length_target"],
+                    },
+                    ensure_ascii=False,
+                )
+            )
             wrote = False
             for attempt in range(args.max_retries + 1):
-                messages = generate_messages_from_spec(rng, spec, attempt=attempt, dummy_text=args.dummy_text)
+                try:
+                    messages = generate_messages_from_spec(
+                        llm=llm,
+                        spec=spec,
+                        attempt=attempt,
+                        dummy_text=args.dummy_text,
+                        temperature=args.temperature,
+                    )
+                except Exception as e:
+                    reasons = [f"llm_error:{type(e).__name__}"]
+                    if attempt == args.max_retries:
+                        failed.append({"dialogue_id": dialogue_id, "reasons": reasons})
+                    continue
                 ok, reasons = validate_messages(messages, spec["complexity"])
+                # If model produced more turns than target, accept it as valid per review requirement.
+                if (not ok) and ("length_out_of_bounds" in reasons) and (len(messages) > spec["length_target"]):
+                    ok = True
+                    reasons = []
                 if ok:
                     record = assemble_record(spec, messages)
                     out_f.write(json.dumps(record, ensure_ascii=False) + "\n")
@@ -614,11 +685,28 @@ def main() -> None:
             if not wrote:
                 continue
 
-    manifest = build_manifest(args.seed, args.n, n_generated, args.out, args.manifest, observed_stats)
+    generation_mode = "dummy" if args.dummy_text else "llm_chatgpt"
+    manifest = build_manifest(
+        args.seed,
+        args.n,
+        n_generated,
+        args.out,
+        args.manifest,
+        observed_stats,
+        generation_mode=generation_mode,
+        model_name=args.model,
+    )
     if failed:
         manifest["failed_records"] = failed
     with open(args.manifest, "w", encoding="utf-8") as mf:
         json.dump(manifest, mf, ensure_ascii=False, indent=2)
+
+    if not args.dummy_text and not args.allow_partial and n_generated != args.n:
+        sample_reasons = [f.get("reasons", []) for f in failed[:3]]
+        raise RuntimeError(
+            f"LLM generation incomplete: generated {n_generated}/{args.n}. "
+            f"Check OPENAI_API_KEY/model/access. Sample failure reasons: {sample_reasons}"
+        )
 
 
 if __name__ == "__main__":

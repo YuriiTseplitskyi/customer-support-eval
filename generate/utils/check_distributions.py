@@ -1,10 +1,12 @@
 import argparse
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List
 
-from generator_config import DISTR, SUB_SCENARIOS
-
+try:
+    from generate.config import DISTR, SUB_SCENARIOS
+except ModuleNotFoundError:
+    from config import DISTR, SUB_SCENARIOS  # type: ignore
 
 ALLOWED_DEVIATION = 0.05
 
@@ -190,15 +192,17 @@ def build_comparison(targets_manifest: Dict[str, Any], achieved: Dict[str, Any])
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Compare desired vs achieved dataset distributions")
-    p.add_argument("--dataset", default="dist_check_dataset.jsonl")
-    p.add_argument("--targets_out", default="distribution_targets_manifest.json")
-    p.add_argument("--achieved_out", default="dist_check_achieved.json")
-    p.add_argument("--comparison_out", default="dist_check_comparison.json")
+    p.add_argument("--dataset", default="generate/jsons/dist_check_dataset.jsonl")
+    p.add_argument("--targets_out", default="generate/jsons/distribution_targets_manifest.json")
+    p.add_argument("--achieved_out", default="generate/jsons/dist_check_achieved.json")
+    p.add_argument("--comparison_out", default="generate/jsons/dist_check_comparison.json")
     return p.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+    for p in [args.targets_out, args.achieved_out, args.comparison_out]:
+        Path(p).parent.mkdir(parents=True, exist_ok=True)
     targets = build_targets_manifest()
     Path(args.targets_out).write_text(json.dumps(targets, ensure_ascii=False, indent=2), encoding="utf-8")
 
