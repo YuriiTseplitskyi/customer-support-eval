@@ -1,3 +1,4 @@
+# Ignore generated data by default
 *.json
 *.jsonl
 __pycache__/
@@ -7,3 +8,10 @@ DOCUMENTATION.md
 FUNCTIONALITY.md
 datasets/
 results/
+
+# Keep baseline dataset/manifests so analyze works out-of-the-box
+!datasets/
+!datasets/dataset_openai_500.jsonl
+!results/
+!results/generation/
+!results/generation/manifest_openai_500.json

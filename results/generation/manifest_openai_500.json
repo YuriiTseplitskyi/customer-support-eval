@@ -1,0 +1,154 @@
+{
+  "seed": 42,
+  "generator_version": "0.1.0",
+  "distributions": {
+    "scenario": {
+      "tariff_question": 0.3,
+      "payment_issue": 0.25,
+      "technical_issue": 0.2,
+      "account_access": 0.15,
+      "refund_request": 0.1
+    },
+    "complexity": {
+      "low": 0.5,
+      "medium": 0.35,
+      "high": 0.15
+    },
+    "outcome": {
+      "resolved": 0.75,
+      "not_resolved": 0.15,
+      "escalated": 0.1
+    },
+    "conflict_level": {
+      "low": 0.7,
+      "medium": 0.2,
+      "high": 0.1
+    },
+    "mistakes_present": {
+      "false": 0.8,
+      "true": 0.2
+    },
+    "num_mistakes_if_present": {
+      "1": 0.6,
+      "2": 0.3,
+      "3": 0.1
+    },
+    "agent_tone": {
+      "polite": 0.6,
+      "neutral": 0.4
+    }
+  },
+  "n_records_requested": 500,
+  "n_records_generated": 495,
+  "dialogue_length_bounds": {
+    "low": [
+      3,
+      5
+    ],
+    "medium": [
+      6,
+      9
+    ],
+    "high": [
+      10,
+      13
+    ]
+  },
+  "timestamp_utc": "2026-02-28T10:30:06.387014+00:00",
+  "outputs": {
+    "dataset_jsonl": "generate\\jsons\\dataset_openai_500.jsonl",
+    "manifest_json": "generate\\jsons\\manifest_openai_500.json"
+  },
+  "observed_stats": {
+    "scenario": {
+      "technical_issue": 102,
+      "tariff_question": 150,
+      "account_access": 70,
+      "payment_issue": 118,
+      "refund_request": 55
+    },
+    "complexity": {
+      "medium": 167,
+      "low": 259,
+      "high": 69
+    },
+    "outcome": {
+      "resolved": 386,
+      "not_resolved": 66,
+      "escalated": 43
+    },
+    "conflict_level": {
+      "low": 358,
+      "medium": 90,
+      "high": 47
+    },
+    "mistakes_present": {
+      "true": 83,
+      "false": 412
+    },
+    "num_mistakes": {
+      "0": 412,
+      "2": 22,
+      "1": 57,
+      "3": 4
+    },
+    "hidden_dissatisfaction": {
+      "true": 56,
+      "false": 439
+    },
+    "satisfaction": {
+      "neutral": 105,
+      "satisfied": 321,
+      "unsatisfied": 69
+    },
+    "quality_score": {
+      "4": 57,
+      "5": 319,
+      "1": 69,
+      "3": 48,
+      "2": 2
+    }
+  },
+  "notes": {
+    "language": "english",
+    "retry_policy": "retry_on_validator_fail_with_fixed_spec",
+    "validator": "role_format_turntaking_length",
+    "deterministic_sampling": true,
+    "generation_mode": "llm_chatgpt",
+    "llm_model": "gpt-4o-mini",
+    "structured_output": true,
+    "schema_validation": "pydantic"
+  },
+  "failed_records": [
+    {
+      "dialogue_id": "dlg_000067",
+      "reasons": [
+        "llm_error:ValidationError"
+      ]
+    },
+    {
+      "dialogue_id": "dlg_000126",
+      "reasons": [
+        "llm_error:ValidationError"
+      ]
+    },
+    {
+      "dialogue_id": "dlg_000259",
+      "reasons": [
+        "llm_error:ValidationError"
+      ]
+    },
+    {
+      "dialogue_id": "dlg_000372",
+      "reasons": [
+        "llm_error:ValidationError"
+      ]
+    },
+    {
+      "dialogue_id": "dlg_000444",
+      "reasons": [
+        "llm_error:ValidationError"
+      ]
+    }
+  ]
+}

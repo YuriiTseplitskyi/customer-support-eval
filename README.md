@@ -6,9 +6,8 @@ This project has two pipelines:
 - `analyze`: evaluates dialogues with LLM councils (intent, quality, satisfaction, mistakes).
 
 Standard workflow:
-1. Generate dataset JSONL.
-2. Analyze dataset JSONL.
-3. Inspect outputs in JSONL files.
+1. Analyze bundled dataset JSONL (ready in repo), or generate a new one.
+2. Inspect outputs in JSONL files.
 
 ## Setup
 Requirements:
@@ -27,16 +26,23 @@ OPENAI_MODEL=gpt-4o-mini
 ```
 
 ## Quick Start (Working Defaults)
-These commands are the recommended default flow for this repo:
+You can run analysis immediately on the bundled dataset (`datasets/dataset_openai_500.jsonl`):
 
+```bash
+python -m analyze.run --dataset datasets/dataset_openai_500.jsonl --output results/analysis/analysis_openai_500.jsonl --overwrite
+```
+
+Notes:
+- Analyzer command above writes fresh results each run because of `--overwrite`.
+- Bundled files included in repo:
+  - `datasets/dataset_openai_500.jsonl`
+  - `results/generation/manifest_openai_500.json`
+
+If you want to generate a new dataset instead:
 ```bash
 python -m generate.run --out datasets/dataset.jsonl --manifest results/generation/manifest.json
 python -m analyze.run --dataset datasets/dataset.jsonl --output results/analysis/analysis_dataset.jsonl --overwrite
 ```
-
-Notes:
-- Generator keeps default values for omitted flags: `--n 500`, `--seed 42`, `--max_retries 3`, `--model gpt-4o-mini`.
-- Analyzer command above writes fresh results each run because of `--overwrite`.
 
 ## Generate 
 Entrypoint:

@@ -22,17 +22,22 @@ python -m analyze.run
 Optional:
 - `OPENAI_MODEL` (default: `gpt-4o-mini`)
 
-## Default End-to-End Run (Generate + Analyze)
-Use this as a working default pipeline from project root:
+## Default Run (Analyze Bundled Dataset)
+Use this command from project root to analyze the pre-generated dataset included in the repo:
 
+```bash
+python -m analyze.run --dataset datasets/dataset_openai_500.jsonl --output results/analysis/analysis_openai_500.jsonl --overwrite
+```
+
+Bundled files:
+- `datasets/dataset_openai_500.jsonl`
+- `results/generation/manifest_openai_500.json`
+
+If you want to generate a custom dataset first:
 ```bash
 python -m generate.run --out datasets/dataset.jsonl --manifest results/generation/manifest.json
 python -m analyze.run --dataset datasets/dataset.jsonl --output results/analysis/analysis_dataset.jsonl --overwrite
 ```
-
-Why this is the default recommendation:
-- generator default output path is not in `datasets/`, so we explicitly set `--out datasets/...`
-- analyzer reads from `datasets/` by default, so these paths stay consistent
 
 ## Analyzer CLI Workflow
 `analyze.run` performs:
