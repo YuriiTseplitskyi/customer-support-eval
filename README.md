@@ -9,6 +9,11 @@ Standard workflow:
 1. Analyze bundled dataset JSONL (ready in repo), or generate a new one.
 2. Inspect outputs in JSONL files.
 
+## Module Docs
+Each main module has its own README with detailed logic and workflow:
+- `generate/README.md` explains generation logic, distributions, and CLI flow.
+- `analyze/README.md` explains evaluator councils, output structure, and CLI flow.
+
 ## Setup
 Requirements:
 - Python 3.12+
